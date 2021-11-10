@@ -15,6 +15,7 @@ from other_experiments_and_plotting_scripts.ising_net_fitness_landscape import c
 
 # --- COMPUTE HEAT CAPACITY -------------------------------------------------------+
 #INPUT: sim_name beta_num Generation_num
+
 def main():
     if len(argv) < 3:
         print("Usage: " + argv[0] + " <sim> + <bind> + <gen>")
@@ -78,8 +79,7 @@ def main():
 
             # Initialize network state with lowest energy network energy state
             # TODO: This eats up most of the computation, make this JIT!!!
-            # if settings['minimal_energy_initializatin_heat_cap']:
-            if True:
+            if settings['minimal_energy_initializatin_heat_cap']:
                 sensor_vals = I.s[0:(settings['nSensors'])]
                 permutated_states, permutated_states_with_sensors = all_states(I, settings, sensor_vals)
                 energies_perm = calculate_energies(I, settings, permutated_states_with_sensors)
