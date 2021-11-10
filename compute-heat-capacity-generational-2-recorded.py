@@ -14,6 +14,7 @@ from other_experiments_and_plotting_scripts.ising_net_fitness_landscape import c
 
 
 # --- COMPUTE HEAT CAPACITY -------------------------------------------------------+
+#INPUT: sim_name beta_num Generation_num
 def main():
     if len(argv) < 3:
         print("Usage: " + argv[0] + " <sim> + <bind> + <gen>")
@@ -77,13 +78,36 @@ def main():
 
             # Initialize network state with lowest energy network energy state
             # TODO: This eats up most of the computation, make this JIT!!!
-            if settings['minimal_energy_initializatin_heat_cap']:
+            # if settings['minimal_energy_initializatin_heat_cap']:
+            if True:
                 sensor_vals = I.s[0:(settings['nSensors'])]
                 permutated_states, permutated_states_with_sensors = all_states(I, settings, sensor_vals)
                 energies_perm = calculate_energies(I, settings, permutated_states_with_sensors)
                 i_min_energy = np.argmin(energies_perm)
                 min_energy_state = permutated_states_with_sensors[i_min_energy]
                 I.s = np.array(min_energy_state)
+                # import matplotlib.pyplot as plt
+                # plt.axhline(y=np.min(energies_perm), color='r', linestyle='-', alpha=1)
+            if settings['anneal'] is not None:
+                exp_beta_min_anneal, exp_beta_max_anneal, n_internal_anneal = settings['anneal']
+                anneal_beta_exps = np.linspace(exp_beta_min_anneal, exp_beta_max_anneal, n_internal_anneal)
+                anneal_betas = [10 ** beta_exp for beta_exp in anneal_beta_exps]
+                anneal_betas = np.array(anneal_betas)
+                # Initialize at last state of thermalization process:
+                # I.s = SequentialGlauberStepFastAnnealing(I.s, I.h, I.J, beta_new, I.Ssize, I.size, anneal_betas)
+                # Initialize lowest energy state during thermalization process:
+                final_s, states, energies = SequentialGlauberStepFastAnnealing_calc_energy(I.s, I.h, I.J, beta_new, I.Ssize, I.size,
+                                                                              anneal_betas)
+
+                argmin_energy = np.argmin(energies)
+                I.s = states[argmin_energy]
+                # plt.ylabel('Energy')
+                # plt.xlabel('Annealing Iteration')
+                # plt.plot(energies, alpha=1)
+                # plt.plot([argmin_energy], [np.min(energies)], marker='X', markersize=25, color="green")
+                # plt.savefig('annealing_agent_{}.png'.format(agentNum))
+                # plt.clf()
+
 
             # Thermalisation to equilibrium before making energy measurements
             #TODO LEave thermalization to equilibrium away before measurement?
@@ -92,25 +116,15 @@ def main():
             #  Measuring energy between Glaubersteps
             I.s, Em, E2m = SequentialGlauberStepFast_calc_energy(thermal_time, I.s, I.h, I.J, beta_new, I.Ssize, I.size)
 
-            #Old, slow way of clculating it:
-            # for t in range(int(T / 10)):
-            #     #  thermal time steps to get ANN to equilibrium
-            #     I.DreamSensorGlauberStep()
-
-            # for t in range(T):
-            #     #  thermal time steps, where Ennergy is recorded
-            #     I.DreamSensorGlauberStep()
-            #     ### Add these 3 lines o embodied ising for natural heat capacity
-            #
-            #     E = -(np.dot(I.s, I.h) + np.dot(np.dot(I.s, I.J), I.s))
-            #     Em += E / float(T)   # <-- mean calculation??
-            #     E2m += E ** 2 / float(T)
-            #     # Why is this divided by T (total amount of time steps after thermalization)? --> mean calculation
 
             #  Claculate heat capacity
             C[rep, agentNum] = beta_new ** 2 * (E2m - Em ** 2) / size
             agentNum += 1
-
+        # plt.ylabel('Energy')
+        # plt.xlabel('Annealing Iteration')
+        # plt.savefig('annealing_all_agents.png')
+        # import sys
+        # sys.exit()
     # print(np.mean(C, 0))
     # TODO: CHANGE THIS SO THERE IS NO CONFLICT WITH OTHER DREAM HEAT CAP CALCULATION
     folder = 'save/' + loadfile + '/C_recorded' + '/C_' + str(iterNum) + '/'
@@ -187,6 +201,85 @@ def SequentialGlauberStepFast_calc_energy(thermalTime, s, h, J, Beta, Ssize, siz
         E2m += E ** 2 / float(thermalTime)
 
     return s, Em, E2m
+
+
+@jit(nopython=True)
+def SequentialGlauberStepFastAnnealing(s, h, J, Beta, Ssize, size, anneal_betas):
+    thermalize_sensors = False
+    if thermalize_sensors:
+        all_neurons_except_sens = np.arange(0, size)
+    else:
+        all_neurons_except_sens = np.arange(Ssize, size)
+
+    #perms_list = np.array([np.random.permutation(np.arange(Ssize, size)) for j in range(thermalTime)])
+    random_vars = np.random.rand(len(anneal_betas), len(all_neurons_except_sens)) #[np.random.rand() for i in perms]
+    for i, anneal_beta in enumerate(anneal_betas):
+        # TODO: Use anneals betas directly as beta (currrently implemented)
+        #  or use as beta factor and multiply with net's beta value??
+        Beta = anneal_beta
+        #perms = perms_list[i]
+        #Prepare a matrix of random variables for later use
+
+        #In previous dream heat cap calculation, the sensors were thermalized as well, while here they remain to have their values
+        if thermalize_sensors:
+            perms = np.random.permutation(np.arange(0, size))
+            #perms = np.random.permutation(size)
+        else:
+            perms = np.random.permutation(np.arange(Ssize, size))
+
+        for j, perm in enumerate(perms):
+            rand = random_vars[i, j]
+            eDiff = 2 * s[perm] * (h[perm] + np.dot(J[perm, :] + J[:, perm], s))
+            #deltaE = E_f - E_i = -2 E_i = -2 * - SUM{J_ij*s_i*s_j}
+            #self.J[i, :] + self.J[:, i] are added because value in one of both halfs of J seperated by the diagonal is zero
+
+            if Beta * eDiff < np.log(1.0 / rand - 1):
+                #transformed  P = 1/(1+e^(deltaE* Beta)
+                s[perm] = -s[perm]
+
+    return s
+
+@jit(nopython=True)
+def SequentialGlauberStepFastAnnealing_calc_energy(s, h, J, Beta, Ssize, size, anneal_betas):
+    thermalize_sensors = False
+    if thermalize_sensors:
+        all_neurons_except_sens = np.arange(0, size)
+    else:
+        all_neurons_except_sens = np.arange(Ssize, size)
+
+    #perms_list = np.array([np.random.permutation(np.arange(Ssize, size)) for j in range(thermalTime)])
+    random_vars = np.random.rand(len(anneal_betas), len(all_neurons_except_sens)) #[np.random.rand() for i in perms]
+    energies = np.empty(len(anneal_betas))
+    states = np.empty((len(anneal_betas),len(s)))
+    for i, anneal_beta in enumerate(anneal_betas):
+        # TODO: Use anneals betas directly as beta (currrently implemented)
+        #  or use as beta factor and multiply with net's beta value??
+        Beta = anneal_beta
+        #perms = perms_list[i]
+        #Prepare a matrix of random variables for later use
+
+        #In previous dream heat cap calculation, the sensors were thermalized as well, while here they remain to have their values
+        if thermalize_sensors:
+            perms = np.random.permutation(np.arange(0, size))
+            #perms = np.random.permutation(size)
+        else:
+            perms = np.random.permutation(np.arange(Ssize, size))
+
+        for j, perm in enumerate(perms):
+            rand = random_vars[i, j]
+            eDiff = 2 * s[perm] * (h[perm] + np.dot(J[perm, :] + J[:, perm], s))
+            #deltaE = E_f - E_i = -2 E_i = -2 * - SUM{J_ij*s_i*s_j}
+            #self.J[i, :] + self.J[:, i] are added because value in one of both halfs of J seperated by the diagonal is zero
+
+            if Beta * eDiff < np.log(1.0 / rand - 1):
+                #transformed  P = 1/(1+e^(deltaE* Beta)
+                s[perm] = -s[perm]
+        # Record/Measure energy:
+        E = -(np.dot(s, h) + np.dot(np.dot(s, J), s))
+
+        energies[i] = E
+        states[i, 0:len(s)] = s
+    return s, states, energies
 
 @jit(nopython=True)
 def SequentialGlauberStepFast(thermalTime, s, h, J, Beta, Ssize, size):
